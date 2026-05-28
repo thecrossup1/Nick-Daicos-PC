@@ -1085,6 +1085,8 @@ a{color:inherit;text-decoration:none}
   <button class="backup-btn" onclick="openRestoreModal()">⬆ Restore</button>
   <button class="backup-btn" onclick="openGallery()" id="galleryBtn" title="View all owned card images">🖼 Gallery</button>
   <button class="backup-btn" onclick="openNewCardsModal()" title="Check TCDB for new Nick Daicos cards">🔍 New cards?</button>
+  <button class="backup-btn sync-push-btn" id="syncPushBtn" onclick="syncPush()" title="Push your data to cloud (GitHub Gist)" style="display:none">☁ Push</button>
+  <button class="backup-btn sync-pull-btn" id="syncPullBtn" onclick="syncPull()" title="Pull data from cloud (GitHub Gist)" style="display:none">⬇ Pull</button>
   <button class="backup-btn" onclick="openAdminModal()" title="Admin tools and stats">⚙ Admin</button>
 </div>
 
@@ -1304,6 +1306,27 @@ a{color:inherit;text-decoration:none}
       <button class="restore-btn" onclick="runOrphanCheck()" style="text-align:left">🔍 Check for orphaned data</button>
     </div>
 
+    <div style="background:#f5f4f0;border-radius:10px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-size:12px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:0.4px;margin-bottom:10px">☁ Cloud Sync (GitHub Gist)</div>
+      <div style="font-size:12px;color:#666;margin-bottom:10px;line-height:1.6">Enter your GitHub Personal Access Token and Gist ID below. These are stored only in your browser's localStorage — never in the HTML file. Set this up on each device you use.</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div>
+          <label style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:0.3px;display:block;margin-bottom:4px">Personal Access Token</label>
+          <input type="password" id="syncTokenInput" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" style="width:100%;font-size:12px;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-family:monospace">
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:0.3px;display:block;margin-bottom:4px">Gist ID</label>
+          <input type="text" id="syncGistInput" placeholder="abc123def456789..." style="width:100%;font-size:12px;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-family:monospace">
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="restore-btn confirm" onclick="saveSyncConfig()" style="flex:1">Save sync config</button>
+          <button class="restore-btn" onclick="clearSyncConfig()" style="flex:0 0 auto">Clear</button>
+        </div>
+        <div id="syncStatusMsg" style="font-size:12px;color:#666;display:none"></div>
+        <div id="syncLastMsg" style="font-size:11px;color:#999;font-family:monospace"></div>
+      </div>
+    </div>
+
     <div id="adminOrphanResult" style="display:none;font-size:12px;background:#fef8ec;border-radius:7px;padding:10px 12px;margin-bottom:12px;line-height:1.6"></div>
 
     <div class="restore-actions">
@@ -1319,6 +1342,9 @@ const STORAGE_KEY = 'nd_tracker_v1';
 const BACKUP_TS_KEY = 'nd_tracker_backup_ts';
 const BACKUP_SAVE_HASH_KEY = 'nd_tracker_backup_hash';
 const CHECKED_TS_KEY = 'nd_tracker_checked_ts';
+const SYNC_TOKEN_KEY = 'nd_tracker_sync_token';
+const SYNC_GIST_KEY = 'nd_tracker_sync_gist';
+const SYNC_LAST_KEY = 'nd_tracker_sync_last';
 const TOTAL = CARDS.length;
 let coll = {}, curView = 'list', modalIdx = null, modalStatus = '', filtered = [...CARDS];
 let pendingRestore = null;
@@ -2074,6 +2100,19 @@ function openAdminModal(){
     `Owned: <strong>${owned}</strong> · with images: <strong>${ownedWithImg}</strong><br>` +
     `Wishlist: <strong>${wishlist}</strong>`;
   document.getElementById('adminOrphanResult').style.display = 'none';
+  // Sync config
+  const {token, gistId} = syncGetConfig();
+  document.getElementById('syncTokenInput').value = token ? '••••••••••••••••' : '';
+  document.getElementById('syncGistInput').value = gistId || '';
+  document.getElementById('syncStatusMsg').style.display = 'none';
+  const lastSync = localStorage.getItem(SYNC_LAST_KEY);
+  const lastEl = document.getElementById('syncLastMsg');
+  if(lastSync){
+    const d = new Date(lastSync);
+    lastEl.textContent = 'Last sync: ' + d.toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  } else {
+    lastEl.textContent = syncIsConfigured() ? 'Not synced yet on this device' : '';
+  }
   document.getElementById('adminModalBg').classList.add('open');
 }
 function closeAdminModalBg(e){ if(e.target===document.getElementById('adminModalBg')) closeAdminDirect(); }
@@ -2167,7 +2206,180 @@ function runOrphanCheck(){
   result.style.display = 'block';
 }
 
-load(); render(); updateBackupLabel();
+// ---- CLOUD SYNC (GitHub Gist) ----
+
+function syncGetConfig(){
+  return {
+    token: localStorage.getItem(SYNC_TOKEN_KEY) || '',
+    gistId: localStorage.getItem(SYNC_GIST_KEY) || ''
+  };
+}
+
+function syncIsConfigured(){
+  const {token, gistId} = syncGetConfig();
+  return !!(token && gistId);
+}
+
+function syncUpdateButtons(){
+  const cfg = syncIsConfigured();
+  document.getElementById('syncPushBtn').style.display = cfg ? '' : 'none';
+  document.getElementById('syncPullBtn').style.display = cfg ? '' : 'none';
+}
+
+function saveSyncConfig(){
+  const token = document.getElementById('syncTokenInput').value.trim();
+  const gistId = document.getElementById('syncGistInput').value.trim();
+  if(!token || !gistId){
+    showSyncMsg('Please enter both a token and a Gist ID.', '#c04a00');
+    return;
+  }
+  localStorage.setItem(SYNC_TOKEN_KEY, token);
+  localStorage.setItem(SYNC_GIST_KEY, gistId);
+  syncUpdateButtons();
+  showSyncMsg('✓ Sync config saved. Push and Pull buttons are now visible in the toolbar.', '#1f6f4a');
+}
+
+function clearSyncConfig(){
+  if(!confirm('Remove sync config from this device? Your Gist data is not affected.')) return;
+  localStorage.removeItem(SYNC_TOKEN_KEY);
+  localStorage.removeItem(SYNC_GIST_KEY);
+  document.getElementById('syncTokenInput').value = '';
+  document.getElementById('syncGistInput').value = '';
+  syncUpdateButtons();
+  showSyncMsg('Sync config cleared from this device.', '#888');
+}
+
+function showSyncMsg(msg, color){
+  const el = document.getElementById('syncStatusMsg');
+  if(!el) return;
+  el.textContent = msg;
+  el.style.color = color || '#666';
+  el.style.display = 'block';
+}
+
+function syncBuildPayload(){
+  const owned = CARDS.filter(c=>getEntry(c).status==='owned').length;
+  return {
+    version: 1,
+    exported: new Date().toISOString(),
+    owned,
+    total: TOTAL,
+    collection: coll
+  };
+}
+
+async function syncPush(){
+  if(!syncIsConfigured()){ alert('Sync not configured — open Admin to set up.'); return; }
+  const {token, gistId} = syncGetConfig();
+  const btn = document.getElementById('syncPushBtn');
+  btn.textContent = '☁ Pushing...';
+  btn.disabled = true;
+  try {
+    const payload = syncBuildPayload();
+    const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `token ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        files: {
+          'nd-tracker-data.json': {
+            content: JSON.stringify(payload, null, 2)
+          }
+        }
+      })
+    });
+    if(!res.ok){
+      const err = await res.json().catch(()=>({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    const now = new Date().toISOString();
+    localStorage.setItem(SYNC_LAST_KEY, now);
+    btn.textContent = '☁ Pushed ✓';
+    setTimeout(()=>{ btn.textContent='☁ Push'; btn.disabled=false; }, 2500);
+  } catch(e) {
+    alert('Push failed: ' + e.message);
+    btn.textContent = '☁ Push';
+    btn.disabled = false;
+  }
+}
+
+async function syncPull(opts={}){
+  if(!syncIsConfigured()){
+    if(!opts.silent) alert('Sync not configured — open Admin to set up.');
+    return null;
+  }
+  const {token, gistId} = syncGetConfig();
+  const btn = document.getElementById('syncPullBtn');
+  if(btn){ btn.textContent = '⬇ Pulling...'; btn.disabled = true; }
+  try {
+    const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+      headers: { 'Authorization': `token ${token}` }
+    });
+    if(!res.ok){
+      const err = await res.json().catch(()=>({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    const gist = await res.json();
+    const file = gist.files['nd-tracker-data.json'];
+    if(!file || !file.content) throw new Error('nd-tracker-data.json not found in Gist.');
+    const data = JSON.parse(file.content);
+    if(!data.collection || !data.version) throw new Error('Gist data does not look like a valid tracker backup.');
+    if(btn){ btn.textContent = '⬇ Pull'; btn.disabled = false; }
+    return data;
+  } catch(e) {
+    if(!opts.silent) alert('Pull failed: ' + e.message);
+    if(btn){ btn.textContent = '⬇ Pull'; btn.disabled = false; }
+    return null;
+  }
+}
+
+async function syncPullAndRestore(){
+  const data = await syncPull();
+  if(!data) return;
+  const cloudDate = data.exported ? new Date(data.exported).toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : 'Unknown';
+  const owned = Object.values(data.collection).filter(v=>v.status==='owned').length;
+  const wish = Object.values(data.collection).filter(v=>v.status==='wishlist').length;
+  if(!confirm(`Cloud data (saved ${cloudDate}): ${owned} owned, ${wish} wishlist.\n\nReplace your current local data with this?`)) return;
+  coll = data.collection;
+  save();
+  localStorage.setItem(BACKUP_TS_KEY, Date.now().toString());
+  localStorage.setItem(BACKUP_SAVE_HASH_KEY, collHash());
+  localStorage.setItem(SYNC_LAST_KEY, new Date().toISOString());
+  render();
+  updateBackupLabel();
+  alert('Cloud data restored successfully!');
+}
+
+// Auto-check on page load: if sync is configured, compare cloud vs local timestamps
+async function syncAutoCheck(){
+  if(!syncIsConfigured()) return;
+  try {
+    const data = await syncPull({silent:true});
+    if(!data || !data.exported) return;
+    const cloudTs = new Date(data.exported).getTime();
+    const localBackupTs = parseInt(localStorage.getItem(BACKUP_TS_KEY)||'0');
+    // Only prompt if cloud is more than 60 seconds newer than last local backup
+    if(cloudTs > localBackupTs + 60000){
+      const cloudDate = new Date(data.exported).toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+      const ownedCloud = Object.values(data.collection).filter(v=>v.status==='owned').length;
+      if(confirm(`☁ Cloud data is newer (saved ${cloudDate}, ${ownedCloud} owned).\n\nRestore cloud data to this device?`)){
+        coll = data.collection;
+        save();
+        localStorage.setItem(BACKUP_TS_KEY, Date.now().toString());
+        localStorage.setItem(BACKUP_SAVE_HASH_KEY, collHash());
+        localStorage.setItem(SYNC_LAST_KEY, new Date().toISOString());
+        render();
+        updateBackupLabel();
+      }
+    }
+  } catch(e) {
+    // Silent fail on auto-check
+  }
+}
+
+load(); render(); updateBackupLabel(); syncUpdateButtons(); syncAutoCheck();
 document.addEventListener('keydown', function(e){ if(e.key==='Escape' && document.getElementById('imgLightboxBg').style.display==='flex') closeImgLightbox(); });
 </script>
 </body>
