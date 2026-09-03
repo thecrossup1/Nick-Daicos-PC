@@ -1,0 +1,38 @@
+name: Build cids.json
+
+on:
+  push:
+    paths:
+      - index.html
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract cids from index.html
+        run: |
+          python3 - <<'PY'
+          import re, json
+          html = open('index.html', encoding='utf-8').read()
+          cids = sorted({int(m) for m in re.findall(r'/cid/(\d+)/', html)})
+          json.dump(cids, open('cids.json', 'w'))
+          print(f"Wrote {len(cids)} cids to cids.json")
+          PY
+
+      - name: Commit cids.json if it changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain cids.json)" ]; then
+            git add cids.json
+            git commit -m "chore: rebuild cids.json from index.html"
+            git push
+          else
+            echo "cids.json unchanged, nothing to commit."
+          fi
